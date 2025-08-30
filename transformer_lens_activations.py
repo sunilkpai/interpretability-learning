@@ -638,6 +638,7 @@ def get_example_probe_tasks(sample_size=500):
 
     # Combine and limit to sample_size
     selected_idxs = easy_idxs[: sample_size // 2] + hard_idxs[: sample_size // 2]
+
     selected_problems = [all_problems[i] for i in selected_idxs]
     selected_idxs_rand = np.random.permutation(len(selected_idxs))
 
@@ -650,8 +651,8 @@ def get_example_probe_tasks(sample_size=500):
                     : sample_size // 10
                 ]
                 + ds_intermediate_algebra["train"]["problem"][:][: sample_size // 10]
-                + ds_number_theory["train"]["problem"][: sample_size // 10]
-                + ds_prealgebra["train"]["problem"][: sample_size // 10]
+                + ds_number_theory["train"]["problem"][: sample_size // 5]
+                # + ds_prealgebra["train"]["problem"][: sample_size // 10]
                 # + ds_precalculus["train"]["problem"][:sample_size]
             ),
             "labels": (
@@ -659,8 +660,8 @@ def get_example_probe_tasks(sample_size=500):
                 + [1] * (sample_size // 2)  # Geometry
                 + [0] * (sample_size // 10)  # Counting & Probability
                 + [0] * (sample_size // 10)  # Intermediate Algebra
-                + [0] * (sample_size // 10)  # Number Theory
-                + [0] * (sample_size // 10)  # Prealgebra
+                + [0] * (sample_size // 5)  # Number Theory
+                # + [0] * (sample_size // 10)  # Prealgebra
                 # + [6] * sample_size  # Precalculus
             ),
             "class_names": [
@@ -674,8 +675,8 @@ def get_example_probe_tasks(sample_size=500):
             ],
         },
         "difficulty": {
-            "texts": [[j] for j in selected_idxs_rand],
-            "labels": np.array([0] * len(easy_idxs) + [1] * len(hard_idxs))[
+            "texts": [selected_problems[j] for j in selected_idxs_rand],
+            "labels": np.array([0] * (sample_size // 2) + [1] * (sample_size // 2))[
                 selected_idxs_rand
             ],  # 0 for easy, 1 for hard
             "class_names": ["Easy", "Hard"],
