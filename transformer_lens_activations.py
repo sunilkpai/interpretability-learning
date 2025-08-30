@@ -7,14 +7,18 @@ following the structure and examples from the TransformerLens main demo.
 """
 
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
+import wandb
 
 
 # Import visualization libraries
 import holoviews as hv
 
 # Import transformer_lens
+from tqdm.notebook import tqdm
 import transformer_lens.utils as utils
 from transformer_lens import HookedTransformer
 from transformer_lens import evals
@@ -46,32 +50,6 @@ def load_model(model_name="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"):
     print(f"Model has {model.cfg.d_model} dimensions")
     print(f"Model uses normalization: {model.cfg.normalization_type}")
     return model
-
-
-# Plotting helper functions using Bokeh/Holoviews
-def imshow(tensor, title="", xaxis="", yaxis="", **kwargs):
-    """Display a tensor as an image using Holoviews."""
-    data = utils.to_numpy(tensor)
-
-    # Create coordinate arrays
-    y_size, x_size = data.shape
-    x_coords = np.arange(x_size)
-    y_coords = np.arange(y_size)
-
-    # Create Holoviews Image object
-    plot = hv.Image(
-        (x_coords, y_coords, data),
-        kdims=[xaxis or "X", yaxis or "Y"],
-        vdims=["Value"],
-        label=title,
-    )
-
-    # Style the plot
-    plot = plot.opts(cmap="RdBu_r", colorbar=True, title=title, **kwargs)
-
-    # Display the plot
-    hv.render(plot, backend="bokeh")
-    return plot
 
 
 # Plotting helper functions using Bokeh/Holoviews
@@ -142,35 +120,6 @@ def show_attention(tensor, tokens=None, title="", **kwargs):
     return plot
 
 
-def line(tensor, title="", xaxis="", yaxis="", **kwargs):
-    """Display a tensor as a line plot using Holoviews."""
-    data = utils.to_numpy(tensor)
-    df = pd.DataFrame(data)
-
-    # Create line plot using hvplot
-    plot = df.hvplot.line(title=title, xlabel=xaxis, ylabel=yaxis, **kwargs)
-
-    # Display the plot
-    hv.render(plot, backend="bokeh")
-    return plot
-
-
-def scatter(x, y, title="", xaxis="", yaxis="", **kwargs):
-    """Display a scatter plot using Holoviews."""
-    x_data = utils.to_numpy(x)
-    y_data = utils.to_numpy(y)
-    df = pd.DataFrame({"x": x_data, "y": y_data})
-
-    # Create scatter plot using hvplot
-    plot = df.hvplot.scatter(
-        x="x", y="y", title=title, xlabel=xaxis, ylabel=yaxis, **kwargs
-    )
-
-    # Display the plot
-    hv.render(plot, backend="bokeh")
-    return plot
-
-
 def bar(tensor, title="", xaxis="", yaxis="", **kwargs):
     """Display a tensor as a bar plot using Holoviews."""
     data = utils.to_numpy(tensor)
@@ -184,38 +133,6 @@ def bar(tensor, title="", xaxis="", yaxis="", **kwargs):
     # Display the plot
     hv.render(plot, backend="bokeh")
     return plot
-
-
-def histogram(tensor, title="", xaxis="", yaxis="", **kwargs):
-    """Display a tensor as a histogram using Holoviews."""
-    data = utils.to_numpy(tensor)
-    df = pd.DataFrame({"values": data})
-
-    # Create histogram using hvplot
-    plot = df.hvplot.hist(y="values", title=title, xlabel=xaxis, ylabel=yaxis, **kwargs)
-
-    # Display the plot
-    hv.render(plot, backend="bokeh")
-    return plot
-
-
-def basic_activation_analysis(model, input_text="The cat sat on the mat."):
-    """Basic activation analysis following the demo structure."""
-    print("=== Basic Activation Analysis ===\n")
-
-    # Tokenize input
-    tokens = model.to_tokens(input_text)
-    print(f"Input text: {input_text}")
-    print(f"Tokens: {tokens}")
-    print(f"Tokenized text: {model.to_string(tokens[0])}")
-    print(f"Number of tokens: {tokens.shape[1]}\n")
-
-    # Get activations with cache
-    logits, cache = model.run_with_cache(tokens)
-    print(f"Final logits shape: {logits.shape}")
-    print(f"Cache keys (first 10): {list(cache.keys())[:10]}...\n")
-
-    return logits, cache, tokens
 
 
 def attention_analysis(model, cache, tokens, layer_idx=0, head_idx=0):
@@ -242,246 +159,6 @@ def attention_analysis(model, cache, tokens, layer_idx=0, head_idx=0):
     )
 
     return head_attention
-
-
-def residual_stream_analysis(model, cache, tokens):
-    """Analyze residual stream following the demo."""
-    print("=== Residual Stream Analysis ===\n")
-
-    # Get residual stream before and after each layer
-    for layer in range(min(3, model.cfg.n_layers)):
-        resid_pre = cache[f"blocks.{layer}.hook_resid_pre"]
-        resid_post = cache[f"blocks.{layer}.hook_resid_post"]
-
-        print(f"Layer {layer}:")
-        print(f"  Residual pre shape: {resid_pre.shape}")
-        print(f"  Residual post shape: {resid_post.shape}")
-        print(f"  Residual stream change: {torch.norm(resid_post - resid_pre):.4f}")
-
-        # Visualize residual stream changes
-        resid_change = resid_post - resid_pre
-        imshow(
-            resid_change[0],  # First batch
-            xaxis="Position",
-            yaxis="Feature",
-            title=f"Layer {layer} Residual Stream Change",
-        )
-
-    print()
-
-
-def mlp_analysis(model, cache, tokens, layer_idx=0):
-    """Analyze MLP activations following the demo."""
-    print("=== MLP Analysis ===\n")
-
-    # Get MLP activations
-    mlp_activations = cache[f"blocks.{layer_idx}.mlp.hook_post"]
-    print(f"MLP activations shape: {mlp_activations.shape}")
-    print("Shape breakdown: [batch, seq_len, d_mlp]")
-
-    # Analyze activation patterns across sequence
-    mlp_activations_seq = mlp_activations[0]  # [seq_len, d_mlp]
-    print(f"MLP activations per token shape: {mlp_activations_seq.shape}")
-
-    # Find most active neurons
-    neuron_activations = torch.mean(
-        mlp_activations_seq, dim=0
-    )  # Average across sequence
-    top_neurons = torch.topk(neuron_activations, k=10)
-    print(f"\nTop 10 most active neurons in layer {layer_idx}:")
-    for i, (neuron_idx, activation) in enumerate(
-        zip(top_neurons.indices, top_neurons.values)
-    ):
-        print(f"  Neuron {neuron_idx}: {activation:.4f}")
-
-    # Visualize neuron activations
-    bar(
-        neuron_activations[:100],  # First 100 neurons
-        title=f"Layer {layer_idx} Neuron Activations (First 100)",
-        xaxis="Neuron Index",
-        yaxis="Activation",
-    )
-
-    return mlp_activations
-
-
-def cross_input_comparison(model, input_texts):
-    """Compare activations across different inputs following the demo."""
-    print("=== Cross-Input Comparison ===\n")
-
-    activations_dict = {}
-
-    for text in input_texts:
-        tokens = model.to_tokens(text)
-        logits, cache = model.run_with_cache(tokens)
-
-        # Store final layer activations
-        final_activations = cache["ln_final.hook_normalized"]
-        activations_dict[text] = final_activations[0, -1]  # Last token, last position
-
-    print("Final layer activations for last token:")
-    for text, activations in activations_dict.items():
-        print(f"  '{text}': norm = {torch.norm(activations):.4f}")
-
-    # Compare similarity between activations
-    texts = list(activations_dict.keys())
-    similarities = []
-    text_pairs = []
-
-    for i in range(len(texts)):
-        for j in range(i + 1, len(texts)):
-            similarity = torch.cosine_similarity(
-                activations_dict[texts[i]], activations_dict[texts[j]], dim=0
-            )
-            similarities.append(similarity.item())
-            text_pairs.append(f"{texts[i][:20]}... vs {texts[j][:20]}...")
-            print(f"Similarity between '{texts[i]}' and '{texts[j]}': {similarity:.4f}")
-
-    # Visualize similarities
-    bar(
-        torch.tensor(similarities),
-        title="Activation Similarities Between Inputs",
-        xaxis="Text Pair",
-        yaxis="Cosine Similarity",
-    )
-
-    return activations_dict
-
-
-def custom_hook_example(model, tokens):
-    """Demonstrate custom hooks following the demo."""
-    print("=== Custom Hook Example ===\n")
-
-    def set_to_zero_hook(tensor, hook):
-        """Hook function that sets activations to zero."""
-        print(f"Hook {hook.name}: setting to zero")
-        return torch.zeros_like(tensor)
-
-    def print_shape_hook(tensor, hook):
-        """Hook function that prints activation shapes."""
-        print(f"Hook {hook.name}: activation shape {tensor.shape}")
-        return tensor
-
-    # Run model with custom hooks
-    hook_names = [
-        "blocks.0.attn.hook_result",
-        "blocks.0.mlp.hook_post",
-    ]
-
-    print("Running with custom hooks:")
-    logits = model.run_with_hooks(
-        tokens, fwd_hooks=[(name, print_shape_hook) for name in hook_names]
-    )
-
-    print("\nRunning with zero intervention:")
-    logits_zero = model.run_with_hooks(
-        tokens, fwd_hooks=[("blocks.0.attn.hook_result", set_to_zero_hook)]
-    )
-
-    print(f"Original logits shape: {logits.shape}")
-    print(f"Modified logits shape: {logits_zero.shape}")
-    print("Custom hooks executed successfully!\n")
-
-    return logits, logits_zero
-
-
-def induction_head_test(model):
-    """Test for induction heads following the demo."""
-    print("=== Induction Head Test ===\n")
-
-    try:
-        # Test induction loss
-        induction_loss = evals.induction_loss(model)
-        print(f"Induction loss: {induction_loss:.4f}")
-
-        # Context: Random performance is around ln(20000) ≈ 10
-        # Naive strategy gets around ln(384) ≈ 5.95
-        if induction_loss < 6.0:
-            print("Model shows evidence of induction heads!")
-        else:
-            print("Model does not show strong evidence of induction heads.")
-
-    except Exception as e:
-        print(f"Could not run induction test: {e}")
-
-    print()
-
-
-def attention_head_analysis(model, cache, tokens, layer_idx=0):
-    """Analyze all attention heads in a layer following the demo."""
-    print("=== Attention Head Analysis ===\n")
-
-    # Get attention patterns for all heads
-    attn_patterns = cache[f"blocks.{layer_idx}.attn.hook_attn_scores"]
-    print(f"Attention patterns shape: {attn_patterns.shape}")
-
-    # Analyze each head
-    n_heads = attn_patterns.shape[1]
-    print(f"Analyzing {n_heads} attention heads in layer {layer_idx}")
-
-    # Calculate attention entropy for each head
-    attention_entropies = []
-    for head_idx in range(n_heads):
-        head_attention = attn_patterns[0, head_idx]  # [seq_len, seq_len]
-
-        # Calculate entropy of attention distribution
-        attention_probs = torch.softmax(head_attention, dim=-1)
-        entropy = -torch.sum(
-            attention_probs * torch.log(attention_probs + 1e-8), dim=-1
-        )
-        avg_entropy = torch.mean(entropy).item()
-        attention_entropies.append(avg_entropy)
-
-        print(f"  Head {head_idx}: avg entropy = {avg_entropy:.4f}")
-
-    # Visualize attention entropies
-    bar(
-        torch.tensor(attention_entropies),
-        title=f"Layer {layer_idx} Attention Head Entropies",
-        xaxis="Head Index",
-        yaxis="Average Entropy",
-    )
-
-    return attention_entropies
-
-
-def analyze_logits(model, logits, tokens, position=-1, top_k=10):
-    """Analyze the model's predictions from logits."""
-    print(f"=== Logits Analysis (Position {position}) ===\n")
-
-    # Get logits for the specified position (default: last position)
-    position_logits = logits[0, position]  # [vocab_size]
-
-    # Convert to probabilities
-    import torch.nn.functional as F
-
-    probabilities = F.softmax(position_logits, dim=-1)
-
-    # Get top predictions
-    top_probs, top_indices = torch.topk(probabilities, k=top_k)
-
-    print(f"Top {top_k} predicted tokens:")
-    print("Token\t\tProbability\tLogit Score")
-    print("-" * 40)
-
-    for i in range(top_k):
-        token_idx = top_indices[i].item()
-        prob = top_probs[i].item()
-        logit_score = position_logits[token_idx].item()
-        token_str = model.to_string(token_idx)
-
-        print(f"{token_str:<15}\t{prob:.4f}\t\t{logit_score:.4f}")
-
-    # Show current context
-    if position >= 0:
-        context = model.to_string(tokens[0, : position + 1])
-        print(f"\nContext: {context}")
-
-    print(f"\nLogits shape: {logits.shape}")
-    print(f"Vocabulary size: {logits.shape[-1]}")
-    print(f"Logits range: [{logits.min():.4f}, {logits.max():.4f}]")
-
-    return top_indices, top_probs
 
 
 def show_all_attention_heads(
@@ -518,78 +195,6 @@ def show_all_attention_heads(
     return layout
 
 
-def main():
-    """Main function demonstrating all activation analysis methods."""
-    print("=== TransformerLens Activation Analysis (Main Demo Style) ===\n")
-
-    # Load model
-    model = load_model()
-    print()
-
-    # Basic activation analysis
-    logits, cache, tokens = basic_activation_analysis(model)
-
-    # Analyze logits and predictions
-    top_indices, top_probs = analyze_logits(model, logits, tokens)
-
-    # Attention analysis
-    head_attention = attention_analysis(model, cache, tokens)
-
-    # Residual stream analysis
-    residual_stream_analysis(model, cache, tokens)
-
-    # MLP analysis
-    mlp_activations = mlp_analysis(model, cache, tokens)
-
-    # Cross-input comparison
-    input_texts = [
-        "The cat sat on the mat.",
-        "The dog ran in the park.",
-        "A bird flew over the tree.",
-        "Mathematics is the language of science.",
-        "Programming requires logical thinking.",
-    ]
-    activations_dict = cross_input_comparison(model, input_texts)
-
-    # Custom hook example
-    logits_orig, logits_zero = custom_hook_example(model, tokens)
-
-    # Induction head test
-    induction_head_test(model)
-
-    # Attention head analysis
-    attention_entropies = attention_head_analysis(model, cache, tokens)
-
-    # Linear probe demonstration
-    probe_results = demonstrate_linear_probes(model)
-
-    print("=== Analysis Complete ===")
-    print("\nSummary of methods demonstrated:")
-    print("1. Basic activation extraction with cache")
-    print("2. Attention pattern analysis and visualization")
-    print("3. Residual stream analysis")
-    print("4. MLP neuron activation analysis")
-    print("5. Cross-input activation comparison")
-    print("6. Custom hook interventions")
-    print("7. Induction head testing")
-    print("8. Attention head entropy analysis")
-
-    print("\nKey Features:")
-    print("- Interactive Bokeh/Holoviews visualizations")
-    print("- Memory-efficient analysis with torch.no_grad()")
-    print("- Comprehensive activation extraction")
-    print("- Custom hook interventions")
-    print("- Cross-input comparisons")
-
-    print("\nCommon Activation Names:")
-    print("- blocks.{layer}.attn.hook_result - Attention output")
-    print("- blocks.{layer}.attn.hook_attn_scores - Attention scores")
-    print("- blocks.{layer}.mlp.hook_post - MLP output")
-    print("- blocks.{layer}.hook_resid_pre - Residual stream before layer")
-    print("- blocks.{layer}.hook_resid_post - Residual stream after layer")
-    print("- ln_final.hook_normalized - Final layer normalization")
-
-
 # Linear Probe Functions for Model Analysis
 
 
@@ -601,61 +206,253 @@ def create_linear_probe(activation_dim, num_classes, device="cpu"):
 
 
 def extract_activations_for_probe(
-    model, texts, labels, layer_idx, activation_name="hook_resid_post"
+    model,
+    texts: list[str],
+    labels: list[int],
+    activation_name="resid_post",
+    pool=False,
+    pbar=True,
 ):
     """Extract activations and labels for training a linear probe."""
     all_activations = []
     all_labels = []
 
-    for text, label in zip(texts, labels):
+    for text, label in tqdm(
+        list(zip(texts, labels)), disable=not pbar, desc="Extracting activations"
+    ):
         # Tokenize and get activations
         tokens = model.to_tokens(text)
         with torch.no_grad():
             _, cache = model.run_with_cache(tokens)
+            cache = cache.to("cpu")
 
         # Get activations from specified layer
-        act_name = get_act_name(activation_name, layer_idx)
-        activations = cache[act_name]  # [batch, seq_len, d_model]
+        activations = torch.stack(
+            [
+                cache[get_act_name(activation_name, layer)]
+                for layer in range(model.cfg.n_layers)
+            ],
+            dim=1,
+        )  # [batch, n_layers, seq_len, d_model]
 
-        # Use mean pooling over sequence length
-        pooled_activations = activations.mean(dim=1)  # [batch, d_model]
+        # Use mean pooling over sequence length or last token
+        pooled_activations = (
+            activations[:, :, -1] if not pool else activations.mean(dim=2)
+        ).reshape(activations.shape[0], -1)  # [batch, n_layers * d_model]
+
+        # Convert to numpy and back to completely detach from computation graph
+        pooled_activations = torch.tensor(
+            pooled_activations.cpu().numpy(), dtype=torch.float32
+        )
 
         all_activations.append(pooled_activations)
         all_labels.extend([label] * pooled_activations.shape[0])
 
-    # Concatenate all activations
-    X = torch.cat(all_activations, dim=0)  # [total_samples, d_model]
-    y = torch.tensor(all_labels, dtype=torch.long)
+    with torch.no_grad():
+        # Concatenate all activations
+        X = torch.cat(all_activations, dim=0)  # [total_samples, n_layers * d_model]
+        y = torch.tensor(all_labels, dtype=torch.long)
+
+    # Final check - ensure no gradients
+    assert not X.requires_grad, "Activations should not require gradients"
+    assert not y.requires_grad, "Labels should not require gradients"
 
     return X, y
 
 
-def train_linear_probe(
-    probe, X_train, y_train, X_val, y_val, learning_rate=0.01, epochs=100, device="cpu"
+def extract_activations(
+    model,
+    probe_tasks,
+    layer: int | str = 27,
+    activation_name: str = "resid_post",
+    pool: bool = False,
+    pbar: bool = True,
 ):
-    """Train a linear probe on activations."""
-    probe.to(device)
-    X_train, y_train = X_train.to(device), y_train.to(device)
-    X_val, y_val = X_val.to(device), y_val.to(device)
+    """Extract activations for a probe task."""
+    return {
+        task_name: extract_activations_for_probe(
+            model,
+            probe_tasks[task_name]["texts"],
+            probe_tasks[task_name]["labels"],
+            activation_name,
+            pool,
+            pbar,
+        )
+        for task_name in probe_tasks.keys()
+    }
+
+
+def train_linear_probe_for_task(
+    model,
+    probe_tasks,
+    task_name: str,
+    data: dict[str, tuple[torch.Tensor, torch.Tensor]],
+    learning_rate=0.01,
+    epochs=100,
+    device="cpu",
+    pbar=True,
+    weight_decay=0,
+    l1_lambda=0.0,
+    batch_size=32,
+    apply_pca=True,
+    pca_components=100,
+    val_report_frequency=20,
+    use_wandb=True,
+    wandb_project="interpretability-probes",
+    wandb_run_name=None,
+    init_normal=True,
+    train_test_split: float = 0.8,
+):
+    """Train a linear probe on activations using stochastic batch gradient descent.
+
+    Args:
+        model: The transformer model
+        probe_tasks: Dictionary of probe tasks
+        task_name: Name of the task to train on
+        data: Dictionary containing training data
+        learning_rate: Learning rate for optimizer (default: 0.01)
+        epochs: Number of training epochs (default: 100)
+        device: Device to train on (default: "cpu")
+        pbar: Whether to show progress bar (default: True)
+        weight_decay: L2 regularization strength (default: 0)
+        l1_lambda: L1 regularization strength (default: 0.0, no L1 regularization)
+        batch_size: Batch size for stochastic gradient descent (default: 32)
+        apply_pca: Whether to apply PCA for dimensionality reduction (default: True)
+        pca_components: Number of PCA components to retain (default: 100)
+        val_report_frequency: How often to print validation metrics (default: 20)
+        use_wandb: Whether to log metrics to wandb (default: True)
+        wandb_project: wandb project name (default: "interpretability-probes")
+        wandb_run_name: wandb run name (default: None, auto-generated)
+        init_normal: Whether to initialize weights to 1 and bias to 0 (default: True)
+    """
+
+    X, y = data[task_name]
+    print(f"Original data shape: {X.shape}")
+    print(f"Data labels shape: {y.shape}")
+
+    # Apply PCA for dimensionality reduction if requested
+    if apply_pca:
+        print(f"Applying PCA to reduce dimensions to {pca_components}...")
+        pca = PCA(n_components=pca_components)
+        X_numpy = X.cpu().numpy()
+        X_pca = pca.fit_transform(X_numpy)
+        X = torch.tensor(X_pca, dtype=torch.float32)
+        print(f"PCA data shape: {X.shape}")
+        print(f"Explained variance ratio: {pca.explained_variance_ratio_.sum():.4f}")
+
+        # Update input dimension for probe
+        input_dim = pca_components
+    else:
+        input_dim = model.cfg.d_model * model.cfg.n_layers
+
+    # Initialize wandb if requested
+    if use_wandb:
+        run_name = wandb_run_name or f"{task_name}_probe"
+        wandb.init(
+            project=wandb_project,
+            name=run_name,
+            config={
+                "task_name": task_name,
+                "learning_rate": learning_rate,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "weight_decay": weight_decay,
+                "l1_lambda": l1_lambda,
+                "apply_pca": apply_pca,
+                "pca_components": pca_components if apply_pca else None,
+                "input_dim": input_dim,
+                "num_classes": len(set(probe_tasks[task_name]["labels"])),
+                "model_name": getattr(model.cfg, "model_name", "unknown"),
+                "n_layers": model.cfg.n_layers,
+                "d_model": model.cfg.d_model,
+                "device": device,
+                "init_normal": init_normal,
+            },
+        )
+
+    # Temporarily enable gradients for probe training
+    torch.set_grad_enabled(True)
+
+    # Create probe with gradients enabled
+    probe = torch.nn.Linear(
+        input_dim,
+        len(set(probe_tasks[task_name]["labels"])),
+        bias=False,
+        device=device,
+    )
+
+    # Initialize weights and bias if requested
+    if init_normal:
+        with torch.no_grad():
+            torch.nn.init.normal_(probe.weight, mean=0.0, std=1.0 / np.sqrt(input_dim))
+            if probe.bias is not None:
+                torch.nn.init.zeros_(probe.bias)
+
+    # Ensure probe parameters require gradients
+    for param in probe.parameters():
+        param.requires_grad = True
+
+    # Split data properly
+    n_samples = len(X)
+    split_idx = int(train_test_split * n_samples)
+
+    X_train = X[:split_idx]
+    y_train = y[:split_idx]
+    X_val = X[split_idx:].to(device)
+    y_val = y[split_idx:].to(device)
+
+    # Create DataLoader for training batches
+    train_dataset = TensorDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(probe.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(
+        probe.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
 
     train_losses = []
+    train_accuracies = []
     val_losses = []
     val_accuracies = []
 
-    for epoch in range(epochs):
-        # Training
+    for epoch in tqdm(
+        range(epochs), desc=f"Training {task_name} probe", disable=not pbar
+    ):
+        # Training with batches
         probe.train()
-        optimizer.zero_grad()
+        epoch_train_loss = 0.0
+        train_correct_predictions = 0
+        train_total_samples = 0
+        num_batches = 0
 
-        outputs = probe(X_train)
-        loss = criterion(outputs, y_train)
-        loss.backward()
-        optimizer.step()
+        for batch_X, batch_y in train_loader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
 
-        train_losses.append(loss.item())
+            optimizer.zero_grad()
+            outputs = probe(batch_X)
+            loss = criterion(outputs, batch_y)
+
+            # Add L1 regularization if specified
+            if l1_lambda > 0:
+                l1_penalty = sum(param.abs().sum() for param in probe.parameters())
+                loss = loss + l1_lambda * l1_penalty
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_train_loss += loss.item()
+            num_batches += 1
+
+            # Calculate training accuracy
+            with torch.no_grad():
+                _, predicted = torch.max(outputs, 1)
+                train_correct_predictions += (predicted == batch_y).sum().item()
+                train_total_samples += batch_y.size(0)
+
+        avg_train_loss = epoch_train_loss / num_batches
+        train_accuracy = train_correct_predictions / train_total_samples
+        train_losses.append(avg_train_loss)
+        train_accuracies.append(train_accuracy)
 
         # Validation
         probe.eval()
@@ -669,14 +466,47 @@ def train_linear_probe(
             accuracy = (predicted == y_val).float().mean().item()
             val_accuracies.append(accuracy)
 
-        if epoch % 20 == 0:
+        # Log to wandb
+        if use_wandb:
+            wandb.log(
+                {
+                    "epoch": epoch,
+                    "loss/train": avg_train_loss,
+                    "loss/val": val_loss.item(),
+                    "accuracy/train": train_accuracy,
+                    "accuracy/val": accuracy,
+                }
+            )
+
+        if epoch % val_report_frequency == 0:
             print(
-                f"Epoch {epoch}: Train Loss = {loss.item():.4f}, "
+                f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Train Acc = {train_accuracy:.4f}, "
                 f"Val Loss = {val_loss.item():.4f}, Val Acc = {accuracy:.4f}"
             )
 
-    return {
+    torch.set_grad_enabled(False)
+
+    # Log final metrics to wandb
+    if use_wandb:
+        wandb.log(
+            {
+                "final/train_loss": train_losses[-1],
+                "final/train_accuracy": train_accuracies[-1],
+                "final/val_loss": val_losses[-1],
+                "final/val_accuracy": val_accuracies[-1],
+                "best/train_accuracy": max(train_accuracies),
+                "best/val_accuracy": max(val_accuracies),
+            }
+        )
+        # Log PCA explained variance if applicable
+        if apply_pca:
+            wandb.log({"pca_explained_variance": pca.explained_variance_ratio_.sum()})
+
+        wandb.finish()
+
+    return probe, {
         "train_losses": train_losses,
+        "train_accuracies": train_accuracies,
         "val_losses": val_losses,
         "val_accuracies": val_accuracies,
         "final_accuracy": val_accuracies[-1],
@@ -730,58 +560,6 @@ def analyze_probe_performance(probe, X_test, y_test, class_names=None, device="c
         }
 
 
-def create_baseline_probes(model, probe_tasks):
-    """Create and train baseline probes for various tasks using a HookedTransformer model."""
-    print("=== Creating Baseline Linear Probes ===\n")
-
-    probe_results = {}
-
-    for task_name, task_data in probe_tasks.items():
-        print(f"Training probe for: {task_name}")
-
-        # Extract activations from different layers
-        layer_results = {}
-
-        for layer_idx in range(min(3, model.cfg.n_layers)):  # Test first 3 layers
-            print(f"  Layer {layer_idx}...")
-
-            # Extract activations using the provided model
-            X, y = extract_activations_for_probe(
-                model, task_data["texts"], task_data["labels"], layer_idx
-            )
-
-            # Split data
-            n_samples = len(X)
-            indices = torch.randperm(n_samples)
-            split_idx = int(0.8 * n_samples)
-
-            train_indices = indices[:split_idx]
-            val_indices = indices[split_idx:]
-
-            X_train, y_train = X[train_indices], y[train_indices]
-            X_val, y_val = X[val_indices], y[val_indices]
-
-            # Create and train probe
-            probe = create_linear_probe(X.shape[1], len(set(y)))
-            results = train_linear_probe(probe, X_train, y_train, X_val, y_val)
-
-            # Analyze performance
-            performance = analyze_probe_performance(
-                probe, X_val, y_val, class_names=task_data.get("class_names")
-            )
-
-            layer_results[layer_idx] = {
-                "probe": probe,
-                "training_results": results,
-                "performance": performance,
-            }
-
-        probe_results[task_name] = layer_results
-        print(f"Completed {task_name}\n")
-
-    return probe_results
-
-
 def visualize_probe_results(probe_results):
     """Visualize the results of all probes."""
     print("=== Probe Results Visualization ===\n")
@@ -809,7 +587,7 @@ def visualize_probe_results(probe_results):
         print()
 
 
-def get_example_probe_tasks(sample_size=200):
+def get_example_probe_tasks(sample_size=500):
     """Get example probe tasks using MATH dataset categories."""
     from datasets import load_dataset
 
@@ -826,76 +604,80 @@ def get_example_probe_tasks(sample_size=200):
     ds_prealgebra = load_dataset("EleutherAI/hendrycks_math", "prealgebra")
     ds_precalculus = load_dataset("EleutherAI/hendrycks_math", "precalculus")
 
+    # Combine all problems and levels
+    all_problems = (
+        ds_prealgebra["train"]["problem"][:]
+        + ds_algebra["train"]["problem"][:]
+        + ds_precalculus["train"]["problem"][:]
+        + ds_counting_and_probability["train"]["problem"][:]
+        + ds_intermediate_algebra["train"]["problem"][:]
+        + ds_number_theory["train"]["problem"][:]
+        + ds_geometry["train"]["problem"][:]
+    )
+
+    all_levels = (
+        ds_prealgebra["train"]["level"][:]
+        + ds_algebra["train"]["level"][:]
+        + ds_precalculus["train"]["level"][:]
+        + ds_counting_and_probability["train"]["level"][:]
+        + ds_intermediate_algebra["train"]["level"][:]
+        + ds_number_theory["train"]["level"][:]
+        + ds_geometry["train"]["level"][:]
+    )
+    # Get indices for level 0 and 4 using list comprehensions
+    easy_idxs = [
+        i
+        for i, level in enumerate(all_levels)
+        if "?" not in level and int(level.strip("Level ")) - 1 == 0
+    ]
+    hard_idxs = [
+        i
+        for i, level in enumerate(all_levels)
+        if "?" not in level and int(level.strip("Level ")) - 1 == 4
+    ]
+
+    # Combine and limit to sample_size
+    selected_idxs = easy_idxs[: sample_size // 2] + hard_idxs[: sample_size // 2]
+    selected_problems = [all_problems[i] for i in selected_idxs]
+    selected_idxs_rand = np.random.permutation(len(selected_idxs))
+
     return {
-        "math_category": {
+        "geometry": {
             "texts": (
-                ds_algebra["train"]["problem"][:sample_size]
-                + ds_geometry["train"]["problem"][:sample_size]
-                + ds_counting_and_probability["train"]["problem"][:sample_size]
-                + ds_intermediate_algebra["train"]["problem"][:sample_size]
-                + ds_number_theory["train"]["problem"][:sample_size]
-                + ds_prealgebra["train"]["problem"][:sample_size]
-                + ds_precalculus["train"]["problem"][:sample_size]
+                ds_algebra["train"]["problem"][:][: sample_size // 10]
+                + ds_geometry["train"]["problem"][:][: sample_size // 2]
+                + ds_counting_and_probability["train"]["problem"][:][
+                    : sample_size // 10
+                ]
+                + ds_intermediate_algebra["train"]["problem"][:][: sample_size // 10]
+                + ds_number_theory["train"]["problem"][: sample_size // 10]
+                + ds_prealgebra["train"]["problem"][: sample_size // 10]
+                # + ds_precalculus["train"]["problem"][:sample_size]
             ),
             "labels": (
-                [0] * sample_size  # Counting & Probability
-                + [1] * sample_size  # Geometry
-                + [2] * sample_size  # Precalculus
-                + [3] * sample_size  # Prealgebra
-                + [4] * sample_size  # Algebra
-                + [5] * sample_size  # Intermediate Algebra
-                + [6] * sample_size  # Number Theory
+                [0] * (sample_size // 10)  # Algebra
+                + [1] * (sample_size // 2)  # Geometry
+                + [0] * (sample_size // 10)  # Counting & Probability
+                + [0] * (sample_size // 10)  # Intermediate Algebra
+                + [0] * (sample_size // 10)  # Number Theory
+                + [0] * (sample_size // 10)  # Prealgebra
+                # + [6] * sample_size  # Precalculus
             ),
             "class_names": [
-                "Counting & Probability",
-                "Precalculus",
-                "Geometry",
-                "Prealgebra",
                 "Algebra",
+                "Geometry",
+                "Counting & Probability",
                 "Intermediate Algebra",
                 "Number Theory",
+                "Prealgebra",
+                "Precalculus",
             ],
         },
-        "math_difficulty": {
-            "texts": (
-                ds_prealgebra["train"]["problem"][:sample_size]
-                + ds_algebra["train"]["problem"][:sample_size]
-                + ds_precalculus["train"]["problem"][:sample_size]
-                + ds_counting_and_probability["train"]["problem"][:sample_size]
-                + ds_intermediate_algebra["train"]["problem"][:sample_size]
-                + ds_number_theory["train"]["problem"][:sample_size]
-            ),
-            "labels": [
-                int(level.strip("Level "))
-                for level in (
-                    ds_prealgebra["train"]["level"][:sample_size]
-                    + ds_algebra["train"]["level"][:sample_size]
-                    + ds_precalculus["train"]["level"][:sample_size]
-                    + ds_counting_and_probability["train"]["level"][:sample_size]
-                    + ds_intermediate_algebra["train"]["level"][:sample_size]
-                    + ds_number_theory["train"]["level"][:sample_size]
-                )
-            ],
-            "class_names": ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5"],
+        "difficulty": {
+            "texts": [[j] for j in selected_idxs_rand],
+            "labels": np.array([0] * len(easy_idxs) + [1] * len(hard_idxs))[
+                selected_idxs_rand
+            ],  # 0 for easy, 1 for hard
+            "class_names": ["Easy", "Hard"],
         },
     }
-
-
-def demonstrate_linear_probes(model):
-    """Demonstrate linear probe analysis on a HookedTransformer model."""
-    print("=== Linear Probe Demonstration ===\n")
-
-    # Get example probe tasks
-    probe_tasks = get_example_probe_tasks()
-
-    # Create and train baseline probes
-    probe_results = create_baseline_probes(model, probe_tasks)
-
-    # Visualize results
-    visualize_probe_results(probe_results)
-
-    return probe_results
-
-
-if __name__ == "__main__":
-    main()
