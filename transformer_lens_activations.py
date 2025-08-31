@@ -586,35 +586,35 @@ def visualize_probe_results(probe_results):
         print()
 
 
-def create_probe_activation_hook(probe_path, factor=1.0, device="cuda"):
+def create_probe_activation_hook(probe_path, factor=1.0, device="cuda", opposite=False):
     """
     Create a TransformerLens activation hook that adds probe activations to resid_post.
-    
+
     Args:
         probe_path: Path to the probe weights file
         factor: Scaling factor for the probe activations
         device: Device to load probe on
-        
+
     Returns:
         Hook function that can be used with model.run_with_hooks()
     """
     # Load the probe weights
     probe = torch.load(probe_path, map_location=device)
-    
+
     # Extract weight matrix from the probe
     if isinstance(probe, dict):
-        weights = probe.get('weight', probe)
+        weights = probe.get("weight", probe)
     else:
-        weights = probe.weight if hasattr(probe, 'weight') else probe
-    
+        weights = probe.weight if hasattr(probe, "weight") else probe
+
     # If 2D, take the second element (assuming first dim is classes)
     if weights.dim() == 2:
-        weights = weights[1]  # Take second class weights
-    
+        weights = weights[0 if opposite else 1]  # Take second class weights
+
     def probe_hook(activation, hook):
         """
         Hook function to add probe activations to residual stream.
-        
+
         Args:
             activation: The residual stream activation [batch, seq_len, d_model]
             hook: The hook object containing layer information
@@ -622,18 +622,20 @@ def create_probe_activation_hook(probe_path, factor=1.0, device="cuda"):
         batch_size, seq_len, d_model = activation.shape
         layer_idx = hook.layer()
         n_layers = weights.shape[0] // d_model
-        
+
         # Extract the relevant portion of probe weights for this layer
-        start_idx = layer_idx * d_model  
+        start_idx = layer_idx * d_model
         end_idx = (layer_idx + 1) * d_model
         layer_weights = weights[start_idx:end_idx]  # [d_model]
-        
+
         # Expand for batch and sequence dimensions
-        probe_addition = layer_weights.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1)
-        
+        probe_addition = (
+            layer_weights.unsqueeze(0).unsqueeze(0).expand(batch_size, seq_len, -1)
+        )
+
         # Scale and add to the original activation
         return activation + (probe_addition * factor)
-    
+
     return probe_hook
 
 
